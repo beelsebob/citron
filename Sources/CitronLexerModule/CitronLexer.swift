@@ -6,14 +6,17 @@ import Foundation
 
 public typealias CitronLexerPosition = (tokenPosition: String.Index, linePosition: String.Index, lineNumber: Int)
 
+@available(iOS 16.0, macOS 13.0, *)
 public class CitronLexer<TokenData> {
     public typealias Action = (TokenData) throws -> Void
     public typealias ErrorAction = (CitronLexerError) throws -> Void
     public enum LexingRule {
         case string(String, TokenData?)
-        case regex(NSRegularExpression, (String) -> TokenData?)
+        case regex(Regex<Substring>, (Substring) -> TokenData?)
+        case nsRegex(NSRegularExpression, (String) -> TokenData?)
         case regexPattern(String, (String) -> TokenData?)
     }
+
     private let rules: [LexingRule]
 
     public private(set) var currentPosition: CitronLexerPosition
@@ -23,7 +26,7 @@ public class CitronLexer<TokenData> {
             // Convert .regexPattern values to equivalent .regex values
             switch (rule) {
             case .regexPattern(let pattern, let handler):
-                return .regex(try! NSRegularExpression(pattern: pattern), handler)
+                return .nsRegex(try! NSRegularExpression(pattern: pattern), handler)
             default:
                 return rule
             }
@@ -55,6 +58,20 @@ public class CitronLexer<TokenData> {
                         matched = true
                     }
                 case .regex(let ruleRegex, let handler):
+                    if let result = try? ruleRegex.prefixMatch(in: string.suffix(from: currentPosition.tokenPosition)) {
+                        let output = result.output
+                        let count = result.count
+                        if let errorStartPosition = errorStartPosition {
+                            try onError?(CitronLexerError.noMatchingRuleAt(errorPosition: errorStartPosition))
+                        }
+                        if let tokenData = handler(output) {
+                            try onFound(tokenData)
+                        }
+                        currentPosition = lexerPosition(in: string, advancedFrom: currentPosition, by: count)
+                        errorStartPosition = nil
+                        matched = true
+                    }
+                case .nsRegex(let ruleRegex, let handler):
                     let result = ruleRegex.firstMatch(in: string, options: .anchored, range:
                         NSRange(
                             location: string.prefix(upTo: currentPosition.tokenPosition).utf16.count,
@@ -104,6 +121,7 @@ public enum CitronLexerError: Error {
     case noMatchingRuleAt(errorPosition: CitronLexerPosition)
 }
 
+@available(iOS 16.0, macOS 13.0, *)
 private extension CitronLexer {
     func lexerPosition(in str: String, advancedFrom from: CitronLexerPosition, by offset: Int) -> CitronLexerPosition {
          let tokenPosition = str.index(from.tokenPosition, offsetBy: offset)
